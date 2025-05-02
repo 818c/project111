@@ -1,3 +1,6 @@
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
 // --- Керування: оголошуємо змінні на самому початку ---
 const keys = {};
 let pointerLocked = false;
@@ -18,7 +21,7 @@ let isReloading = false;
 let canShoot = true;
 
 // --- Вороги ---
-const ENEMY_HP = 3;
+const ENEMY_HP = 100;
 const ENEMY_RESPAWN = 2500; // мс
 const ENEMY_COUNT = 5;
 let enemies = [];
@@ -27,11 +30,230 @@ let enemies = [];
 let scene, camera, renderer;
 let player, playerVelocity = new THREE.Vector3(), canJump = false;
 let obstacles = [];
+let playerModel = null;
 
-init();
-animate();
+const loader = new GLTFLoader();
+const models = {
+    tree: null,
+    rock: null,
+    fence: null,
+    enemy: null
+};
 
-function init() {
+const clock = new THREE.Clock();
+
+function loadPlayerModel() {
+    return new Promise((resolve, reject) => {
+        loader.load(
+            './models/character/character.glb',
+            (gltf) => {
+                console.log('Model loaded successfully:', gltf);
+                playerModel = gltf.scene;
+                
+                // Логуємо структуру моделі
+                console.log('Model children:', playerModel.children);
+                
+                // Встановлюємо розмір і позицію
+                playerModel.scale.set(15, 15, 15); // Збільшуємо в 3 рази
+                playerModel.position.y = 0; // Фіксуємо позицію по Y
+                
+                // Перевіряємо наявність mesh
+                playerModel.traverse((child) => {
+                    if (child.isMesh) {
+                        console.log('Found mesh:', child);
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                    }
+                });
+                
+                resolve();
+            },
+            (xhr) => {
+                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+            },
+            (error) => {
+                console.error('Error loading model:', error);
+                reject(error);
+            }
+        );
+    });
+}
+
+function loadPistolModel() {
+    return new Promise((resolve, reject) => {
+        loader.load(
+            './models/weapons/pistol.glb',
+            (gltf) => {
+                const pistolModel = gltf.scene;
+                
+                // Логуємо структуру моделі для аналізу
+                console.log('Pistol model structure:', gltf);
+                
+                // Проходимо по всіх мешах моделі
+                pistolModel.traverse((child) => {
+                    if (child.isMesh) {
+                        console.log('Found mesh:', child.name);
+                        // Налаштовуємо меш
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                    }
+                });
+                
+                // Збільшуємо розмір
+                pistolModel.scale.set(4.5, 4.5, 4.5);
+                
+                // Спроба 1: встановлюємо позицію ближче
+                pistolModel.position.set(-0.5, 0, 0.2);
+                
+                // Спроба 2: якщо є батьківський об'єкт, налаштовуємо його
+                if (pistolModel.parent) {
+                    pistolModel.parent.position.set(0, 0, 0);
+                }
+                
+                // Повертаємо на 180 градусів
+                pistolModel.rotation.y = Math.PI;
+                
+                // Додаємо допоміжну геометрію для візуалізації позиції
+                const helper = new THREE.BoxHelper(pistolModel, 0xff0000);
+                pistolModel.add(helper);
+                
+                resolve(pistolModel);
+            },
+            (xhr) => {
+                console.log('Pistol: ' + (xhr.loaded / xhr.total * 100) + '% loaded');
+            },
+            reject
+        );
+    });
+}
+
+function loadEnemyModel() {
+    return new Promise((resolve, reject) => {
+        loader.load(
+            './models/character/cappuccino_ballerina.glb',
+            (gltf) => {
+                const enemyModel = gltf.scene;
+                // Встановлюємо такий самий розмір, як у героя
+                enemyModel.scale.set(15, 15, 15);
+                
+                // Перевіряємо наявність анімацій
+                if (gltf.animations && gltf.animations.length > 0) {
+                    console.log('Enemy animations:', gltf.animations);
+                    const mixer = new THREE.AnimationMixer(enemyModel);
+                    const action = mixer.clipAction(gltf.animations[0]);
+                    // Сповільнюємо анімацію вдвічі
+                    action.timeScale = 0.5;
+                    action.play();
+                    enemyModel.mixer = mixer;
+                }
+                
+                resolve(enemyModel);
+            },
+            (xhr) => {
+                console.log('Enemy: ' + (xhr.loaded / xhr.total * 100) + '% loaded');
+            },
+            reject
+        );
+    });
+}
+
+function loadModels() {
+    return new Promise((resolve, reject) => {
+        const loadingManager = new THREE.LoadingManager();
+        loadingManager.onLoad = () => resolve();
+        
+        // Завантажуємо дерево
+        loader.load(
+            './models/environment/tree.glb',
+            (gltf) => {
+                models.tree = gltf.scene;
+                models.tree.scale.set(5, 5, 5);
+            },
+            undefined,
+            reject
+        );
+
+        // Завантажуємо камінь
+        loader.load(
+            './models/environment/rock.glb',
+            (gltf) => {
+                models.rock = gltf.scene;
+                models.rock.scale.set(3, 3, 3);
+            },
+            undefined,
+            reject
+        );
+
+        // Завантажуємо паркан
+        loader.load(
+            './models/environment/fence.glb',
+            (gltf) => {
+                models.fence = gltf.scene;
+                models.fence.scale.set(4, 4, 4);
+            },
+            undefined,
+            reject
+        );
+
+        // Завантажуємо модель ворога
+        loader.load(
+            './models/character/cappuccino_ballerina.glb',
+            (gltf) => {
+                models.enemy = gltf.scene;
+                models.enemy.scale.set(4, 4, 4); // Масштаб можна буде налаштувати
+            },
+            undefined,
+            reject
+        );
+    });
+}
+
+function placeEnvironmentObjects() {
+    // Розставляємо дерева
+    for (let i = 0; i < 20; i++) {
+        if (models.tree) {
+            const tree = models.tree.clone();
+            const x = (Math.random() - 0.5) * MAP_SIZE.x;
+            const z = (Math.random() - 0.5) * MAP_SIZE.z;
+            tree.position.set(x, 0, z);
+            tree.rotation.y = Math.random() * Math.PI * 2;
+            scene.add(tree);
+        }
+    }
+
+    // Розставляємо каміння
+    for (let i = 0; i < 15; i++) {
+        if (models.rock) {
+            const rock = models.rock.clone();
+            const x = (Math.random() - 0.5) * MAP_SIZE.x;
+            const z = (Math.random() - 0.5) * MAP_SIZE.z;
+            rock.position.set(x, 0, z);
+            rock.rotation.y = Math.random() * Math.PI * 2;
+            scene.add(rock);
+        }
+    }
+
+    // Створюємо огорожу по периметру
+    if (models.fence) {
+        const fenceSegments = 40;
+        const segmentLength = MAP_SIZE.x / fenceSegments;
+        
+        for (let i = 0; i < fenceSegments; i++) {
+            // Північна сторона
+            const fenceN = models.fence.clone();
+            fenceN.position.set(-MAP_SIZE.x/2 + i*segmentLength, 0, -MAP_SIZE.z/2);
+            scene.add(fenceN);
+            
+            // Південна сторона
+            const fenceS = models.fence.clone();
+            fenceS.position.set(-MAP_SIZE.x/2 + i*segmentLength, 0, MAP_SIZE.z/2);
+            fenceS.rotation.y = Math.PI;
+            scene.add(fenceS);
+        }
+    }
+}
+
+async function init() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0xb4e7b0);
 
@@ -44,29 +266,72 @@ function init() {
     scene.add(light);
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
-    // Поле
-    const fieldGeo = new THREE.PlaneGeometry(MAP_SIZE.x, MAP_SIZE.z);
-    const fieldMat = new THREE.MeshLambertMaterial({color: 0xb4e7b0});
-    const field = new THREE.Mesh(fieldGeo, fieldMat);
-    field.rotation.x = -Math.PI/2;
-    field.position.y = 0;
-    scene.add(field);
+    // Створюємо градієнтну текстуру для підлоги
+    const groundCanvas = document.createElement('canvas');
+    groundCanvas.width = 512;
+    groundCanvas.height = 512;
+    const ctx = groundCanvas.getContext('2d');
+    
+    // Створюємо градієнт
+    const gradient = ctx.createRadialGradient(256, 256, 0, 256, 256, 256);
+    gradient.addColorStop(0, '#4a934a');   // Світло-зелений в центрі
+    gradient.addColorStop(1, '#2d5a2d');   // Темно-зелений по краях
+    
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 512, 512);
+    
+    const groundTexture = new THREE.CanvasTexture(groundCanvas);
+    groundTexture.wrapS = THREE.RepeatWrapping;
+    groundTexture.wrapT = THREE.RepeatWrapping;
+    groundTexture.repeat.set(100, 100);
+    
+    const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(MAP_SIZE.x, MAP_SIZE.z),
+        new THREE.MeshLambertMaterial({ 
+            map: groundTexture,
+            side: THREE.DoubleSide 
+        })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
 
-    // Персонаж (куб) — спавн у вільній точці
-    let spawnPos = getFreePlayerSpawn();
-    const playerGeo = new THREE.BoxGeometry(10, 20, 10);
-    const playerMat = new THREE.MeshLambertMaterial({color: 0x444444});
-    player = new THREE.Mesh(playerGeo, playerMat);
-    player.position.set(spawnPos.x, 10, spawnPos.z);
-    scene.add(player);
+    // Гравець
+    try {
+        await loadPlayerModel();
+        player = playerModel;  // Використовуємо завантажену модель
+        let pos = getFreePlayerSpawn();
+        player.position.set(pos.x, 11, pos.z);
+        scene.add(player);
 
-    // АК-47 (простий box у руках)
-    const akGeo = new THREE.BoxGeometry(13, 2.5, 2.5);
-    const akMat = new THREE.MeshLambertMaterial({color: 0x222200});
-    player.ak = new THREE.Mesh(akGeo, akMat);
-    player.ak.position.set(0, 3, 8); // трохи вище центру, попереду
-    player.ak.castShadow = true;
-    player.add(player.ak);
+        // Завантажуємо і додаємо пістолет
+        try {
+            const pistol = await loadPistolModel();
+            // Створюємо порожній контейнер для пістолета
+            const weaponContainer = new THREE.Object3D();
+            weaponContainer.position.set(-0.5, 0, 0.2);
+            weaponContainer.add(pistol);
+            player.add(weaponContainer);
+            player.weapon = pistol; // Зберігаємо посилання на зброю
+        } catch (error) {
+            console.error('Error loading pistol model:', error);
+            // Якщо модель не завантажилась, використовуємо простий куб
+            const akGeo = new THREE.BoxGeometry(1, 1, 8);
+            const akMat = new THREE.MeshLambertMaterial({color: 0x111111});
+            const ak = new THREE.Mesh(akGeo, akMat);
+            ak.position.set(3, 0, 2);
+            player.add(ak);
+            player.weapon = ak;
+        }
+    } catch (error) {
+        console.error('Error loading player model:', error);
+        // Якщо модель не завантажилась, використовуємо простий куб
+        const playerGeo = new THREE.BoxGeometry(12, 22, 12);
+        const playerMat = new THREE.MeshLambertMaterial({color: 0x00ff00});
+        player = new THREE.Mesh(playerGeo, playerMat);
+        let pos = getFreePlayerSpawn();
+        player.position.set(pos.x, 11, pos.z);
+        scene.add(player);
+    }
 
     // Перешкоди (рандомно + кілька великих)
     addObstacle(0, 10, 0, 40, 20, 300);
@@ -103,6 +368,13 @@ function init() {
 
     // --- UI ---
     createUI();
+
+    try {
+        await loadModels();
+        placeEnvironmentObjects();
+    } catch (error) {
+        console.error('Error loading models:', error);
+    }
 }
 
 function getFreePlayerSpawn() {
@@ -158,9 +430,12 @@ function animate() {
 
     player.rotation.y = yaw;
 
-    // --- Логічний рух по локальній осі персонажа ---
-    let forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-    let right = new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw));
+    // --- Логічний рух відносно камери ---
+    let forward = new THREE.Vector3(0, 0, 1);
+    let right = new THREE.Vector3(-1, 0, 0);  // Змінили з (1, 0, 0) на (-1, 0, 0)
+    forward.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+    right.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+    
     let moveDir = new THREE.Vector3();
     if (keys['w']) moveDir.add(forward);
     if (keys['s']) moveDir.sub(forward);
@@ -192,23 +467,7 @@ function animate() {
     camera.lookAt(player.position.x, player.position.y + 5, player.position.z);
 
     // --- Оновлення ворогів ---
-    for (const enemy of enemies) {
-        if (enemy.active) {
-            enemy.mesh.visible = true;
-            // Зомбі-рух до гравця
-            let toPlayer = player.position.clone().sub(enemy.mesh.position);
-            toPlayer.y = 0;
-            if (toPlayer.length() > 2) {
-                toPlayer.normalize();
-                let next = enemy.mesh.position.clone().addScaledVector(toPlayer, 0.7);
-                if (!checkObstacleCollision(next)) {
-                    enemy.mesh.position.copy(next);
-                }
-            }
-        } else {
-            enemy.mesh.visible = false;
-        }
-    }
+    updateEnemies();
 
     // --- Оновлення куль ---
     for (let i = bullets.length - 1; i >= 0; i--) {
@@ -217,10 +476,13 @@ function animate() {
         bullet.lifetime -= 16;
         // Перевірка зіткнень з ворогами
         for (const enemy of enemies) {
-            if (!enemy.active) continue;
-            if (bullet.mesh.position.distanceTo(enemy.mesh.position) < 10) {
+            if (!enemy.isEnemy) continue;
+            if (bullet.mesh.position.distanceTo(enemy.position) < 10) {
                 enemy.hp--;
-                if (enemy.hp <= 0) respawnEnemy(enemy);
+                if (enemy.hp <= 0) {
+                    scene.remove(enemy);
+                    enemies.splice(enemies.indexOf(enemy), 1);
+                }
                 scene.remove(bullet.mesh);
                 bullets.splice(i, 1);
                 break;
@@ -240,15 +502,36 @@ function animate() {
 }
 
 // --- Вороги ---
-function spawnEnemy() {
-    const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(12, 22, 12),
-        new THREE.MeshLambertMaterial({color: 0xff3333})
-    );
-    let pos = getFreeEnemySpawn();
-    mesh.position.set(pos.x, 11, pos.z);
-    scene.add(mesh);
-    enemies.push({ mesh, hp: ENEMY_HP, active: true, respawnTimer: 0 });
+async function spawnEnemy() {
+    try {
+        const enemyModel = await loadEnemyModel();
+        const enemy = enemyModel.clone();
+        
+        const spawnPos = getFreeEnemySpawn();
+        enemy.position.set(spawnPos.x, 11, spawnPos.z);
+        
+        enemy.isEnemy = true;
+        enemy.hp = ENEMY_HP;
+        enemy.speed = 0.35; // Зменшуємо швидкість вдвічі (було 0.7)
+        
+        scene.add(enemy);
+        enemies.push(enemy);
+        
+    } catch (error) {
+        console.error('Error spawning enemy:', error);
+        // Fallback до червоного куба
+        const enemy = new THREE.Mesh(
+            new THREE.BoxGeometry(8, 20, 8),
+            new THREE.MeshLambertMaterial({color: 0xff0000})
+        );
+        const spawnPos = getFreeEnemySpawn();
+        enemy.position.set(spawnPos.x, 11, spawnPos.z);
+        enemy.isEnemy = true;
+        enemy.hp = ENEMY_HP;
+        enemy.speed = 0.35; // Тут також зменшуємо швидкість
+        scene.add(enemy);
+        enemies.push(enemy);
+    }
 }
 
 function getFreeEnemySpawn() {
@@ -261,14 +544,39 @@ function getFreeEnemySpawn() {
     return {x, z};
 }
 
-function respawnEnemy(enemy) {
-    enemy.active = false;
-    setTimeout(() => {
-        let pos = getFreeEnemySpawn();
-        enemy.mesh.position.set(pos.x, 11, pos.z);
-        enemy.hp = ENEMY_HP;
-        enemy.active = true;
-    }, ENEMY_RESPAWN);
+function updateEnemies() {
+    const delta = clock.getDelta();
+    
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        const enemy = enemies[i];
+        if (enemy.hp <= 0) {
+            scene.remove(enemy);
+            enemies.splice(i, 1);
+            continue;
+        }
+
+        // Оновлюємо анімацію
+        if (enemy.mixer) {
+            enemy.mixer.update(delta);
+        }
+
+        // Рух до гравця
+        const dir = new THREE.Vector3();
+        dir.subVectors(player.position, enemy.position).normalize();
+        
+        // Плавний поворот до гравця
+        const targetRotation = Math.atan2(dir.x, dir.z);
+        const currentRotation = enemy.rotation.y;
+        const rotationDiff = targetRotation - currentRotation;
+        
+        // Нормалізуємо різницю кутів
+        const normalizedDiff = Math.atan2(Math.sin(rotationDiff), Math.cos(rotationDiff));
+        enemy.rotation.y += normalizedDiff * 0.1; // Плавний поворот
+        
+        // Рух вперед
+        enemy.position.x += dir.x * enemy.speed;
+        enemy.position.z += dir.z * enemy.speed;
+    }
 }
 
 // --- Стрільба ---
@@ -277,9 +585,19 @@ function shoot() {
     ammo--;
     canShoot = false;
     setTimeout(() => { canShoot = true; }, 120);
-    // Куля вилітає з дула АК-47
+    
+    // Отримуємо позицію дула пістолета
     const gunWorldPos = new THREE.Vector3();
-    player.ak.getWorldPosition(gunWorldPos);
+    player.weapon.getWorldPosition(gunWorldPos);
+    
+    // Додаємо невеликий зсув, щоб кулі вилітали з дула
+    const offset = new THREE.Vector3(
+        Math.sin(yaw) * 2,  // Зсув вперед
+        0,                  // Висота залишається такою ж
+        Math.cos(yaw) * 2   // Зсув вбік
+    );
+    gunWorldPos.add(offset);
+    
     const dir = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
     const bulletGeo = new THREE.SphereGeometry(1.2, 8, 8);
     const bulletMat = new THREE.MeshLambertMaterial({color: 0xf9e79f});
@@ -335,3 +653,6 @@ function updateUI() {
     uiAmmo.innerText = `АК-47: ${ammo}/${MAGAZINE_SIZE}`;
     uiReload.innerText = isReloading ? 'Перезарядка...' : '';
 }
+
+init();
+animate();
